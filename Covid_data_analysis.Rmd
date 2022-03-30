@@ -1,0 +1,714 @@
+---
+title: "Covid_data_analysis"
+author: "Yongqi Liang"
+date: "22/03/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(lubridate)
+library(forecast)
+library(tseries)
+options(scipen = 999)
+```
+
+read files:
+```{r}
+cases_daily <- read_csv("time_series_covid19_confirmed_global.csv")
+pop <- read_csv("UID_ISO_FIPS_LookUp_Table.csv")
+head(pop)
+```
+
+
+task1: the world cases time series:
+```{r}
+cum_world <- cases_daily %>% 
+  select(c(-1, -2, -3, -4)) %>%
+  summarise_all(sum) %>% 
+  slice(1) %>%
+  unlist(., use.names=FALSE)
+
+world <- diff(c(0, cum_world))
+
+min(world)
+
+time<-seq(as.Date("2020/1/22"),length.out=14,by="2 months")
+```
+
+plot:
+```{r, fig.height=10, fig.width=20}
+`Number of Daily New Cases` <- ts(world, frequency=365, start=2020)
+plot.ts(`Number of Daily New Cases`,axes=F)
+axis(2) # plot the y axis
+axis(1, labels=time, at=seq(from=2020, by=0.17, length.out=length(time)))
+box() # and the box around the plot
+```
+
+
+task2: find the top 5 countries which have the most total cases
+```{r}
+new_cases_by_country <- cases_daily %>%
+  select(c(-1, -3, -4)) %>%
+  group_by(`Country/Region`) %>%
+  summarise(across(where(is.numeric), ~ sum(.x, na.rm = TRUE)))
+
+new_cases_by_country %>% 
+  rowwise(`Country/Region`) %>% 
+  summarise(total_cases = sum(c_across(`1/22/20`:`3/20/22`)))
+```
+
+```{r}
+total_cases_by_country <- cases_daily %>%
+  select(c(-1, -3, -4)) %>%
+  group_by(`Country/Region`) %>%
+  summarise(cum = sum(`3/20/22`, na.rm = TRUE)) %>%
+  arrange(desc(cum))
+
+top5cases_country <- total_cases_by_country[1:5, ] %>% mutate(`Country/Region` = factor(`Country/Region`,levels=c("United Kingdom", "France","Brazil", "India", "US")))
+
+#plot
+top5cases_country %>% ggplot(aes(x = `Country/Region`, y = cum)) + geom_bar(stat="identity", fill = "#FF6666") + ylab("Cumulative confirmed cases") + labs(title = "Top 5 Country/Region by Cumulative confirmed cases") + theme(plot.title = element_text(hjust = 0.5)) + coord_flip()
+```
+
+task3: top 5 countries which has the largest percentage of cases
+```{r}
+clean_pop <- pop %>% group_by(Country_Region) %>%
+  filter(is.na(Province_State)) %>% #merge population of the regions within the same country
+  filter(Population>0) %>%
+  select(c(8, 12))
+ 
+
+#join table:
+country_per <- total_cases_by_country %>%
+  inner_join(clean_pop, by=c(`Country/Region`="Country_Region")) %>%
+  mutate(percentage = cum/Population) %>%
+  arrange(desc(percentage))
+
+# find the population of top 5 from task2
+country_per %>% filter(`Country/Region` %in% c("United Kingdom", "France","Brazil", "India", "US")) %>%
+  mutate(diff = Population-cum)
+
+```
+
+task4: predict
+(1)plot
+```{r, fig.height=6, fig.width=10}
+data <- ts(world, frequency=365, start=2020)
+# Number of Daily New Cases for 2020/1/22-2022/3/20 plotted as time series
+par(las=3)
+plot(data, xlab="", ylab = "Number of Daily New Cases", xaxt="n",col="red")
+axis(2) # plot the y axis
+axis(1, labels=time, at=seq(from=2020, by=0.17, length.out=length(time)))
+box()
+```
+
+Differenced: 
+```{r}
+# Differenced data to make stationery on mean
+plot(diff(data),ylab="Differenced Number of Daily New Cases", xaxt="n",xlab="",col="red")
+axis(2) # plot the y axis
+axis(1, labels=time, at=seq(from=2020, by=0.17, length.out=length(time)))
+```
+
+
+
+
+log: 
+```{r}
+# log transform data to make stationery on variance
+plot(log10(data),ylab="Log10(Number of Daily New Cases)", xaxt="n",xlab="",col="red")
+axis(2) # plot the y axis
+axis(1, labels=time, at=seq(from=2020, by=0.17, length.out=length(time)))
+```
+
+
+diff+log: 
+```{r}
+# differenced log transform data to make data stationery on both mean and variance
+plot(diff(log10(data)),xlab="",ylab="Differenced Log (Number of Daily New Cases)", xaxt="n",col="red")
+axis(2) # plot the y axis
+axis(1, labels=time, at=seq(from=2020, by=0.168, length.out=length(time)))
+par(mfrow = c(1,2))
+```
+
+Augmented Dickey-Fuller Test:
+```{r}
+adf.test(data)
+adf.test(diff(data))
+adf.test(log10(data))
+adf.test(diff(log10(data))) # selected
+```
+
+
+(2)
+test acf and pacf
+
+using data
+```{r}
+acf(ts(data),main="ACF Number of Daily New Cases",col="green")
+pacf(ts(data),main="PACF Number of Daily New Cases", col="green")
+```
+
+
+using diff(log10(data))) ---- stationary data
+```{r}
+acf(ts(diff(log10(data))),main="ACF Number of Daily New Cases",col="green")
+pacf(ts(diff(log10(data))),main="PACF Number of Daily New Cases", col="green")
+```
+
+
+
+(3)
+```{r}
+require(forecast)
+AR <- auto.arima((log10(data)), approximation=FALSE,trace=FALSE)
+summary(AR)
+par(bg = "white")
+pred <- predict(AR, n.ahead = 30)
+pred
+pred$pred
+plot(data,col="red",xaxt="n" ,xlab = "",ylab = "Number of Daily New Cases",main="Number of Daily New Cases Forecast for the next 30 days")
+lines(10^(pred$pred),col="blue" ,xaxt="n")
+#lines(10^(pred$pred+2*pred$se),col="green")
+#lines(10^(pred$pred-2*pred$se),col="green")
+
+par(las=3)
+
+time2<-seq(as.Date("2020/1/22"),length.out=10,by="3 months")  
+axis(1, labels=time2, at=seq(from=2020, by=0.2493, length.out=length(time2)))
+```
+
+```{r}
+acf(ts(AR$residuals),main='ACF Residual')
+pacf(ts(AR$residuals),main='PACF Residual')
+```
+
+```{r}
+#Only the Predicted Plot
+plot(10^(pred$pred),col="blue", xaxt = "n", xlab="",ylab="Number of Daily New Cases",main="Number of Daily New Cases Forecast for the next 30 days")
+time3<-seq(as.Date("2022/3/21"),length.out=11,by="3 days") 
+axis(1, labels=time3, at=seq(from=2022.16, by=0.0081, length.out=length(time3)), cex.axis=0.6)
+```
+
+
+US data
+```{r}
+US_cum <- new_cases_by_country %>% 
+  filter(`Country/Region` == "US") %>%
+  select(-1) %>%
+  slice(1) %>%
+  unlist(., use.names=FALSE)
+
+
+US <- diff(c(0, US_cum))[39:789]
+
+for (n in seq(1, length(US), 1)) {
+  if (US[n] >910000) US[n] = mean(US[n-1], US[n+1])
+}
+
+US_data <- ts(US, frequency=365, start=2020)
+# Number of Daily New Cases for 2020/1/22-2022/3/20 plotted as time series
+par(las=3)
+plot(US_data, xlab="", ylab = "Number of Daily New Cases", xaxt="n",col="red")
+axis(2) # plot the y axis
+axis(1, labels=time, at=seq(from=2020, by=0.159, length.out=length(time)))
+box()
+```
+
+
+```{r}
+acf(ts(US_data),main="ACF Number of Daily New Cases",col="green")
+pacf(ts(US_data),main="PACF Number of Daily New Cases", col="green")
+```
+
+adf test
+```{r}
+adf.test(diff(log10(US_data)))
+```
+
+```{r}
+plot(diff(log10(US_data)),xlab="",ylab="Differenced Log (Number of Daily New Cases)", xaxt="n",col="red")
+axis(2) # plot the y axis
+axis(1, labels=time, at=seq(from=2020, by=0.156, length.out=length(time)))
+```
+
+
+using diff(log10(data))) ---- stationary data
+```{r}
+acf(ts(diff(log10(US_data))),main="ACF Number of Daily New Cases",col="green")
+pacf(ts(diff(log10(US_data))),main="PACF Number of Daily New Cases", col="green")
+```
+
+
+```{r}
+US_AR <- auto.arima((log10(US_data)), approximation=FALSE,trace=FALSE)
+summary(US_AR)
+par(bg = "white")
+US_pred <- predict(US_AR, n.ahead = 30)
+US_pred
+10^US_pred$pred
+plot(US_data,col="red",xaxt="n" ,xlab = "",ylab = "Number of Daily New Cases",main="Number of Daily New Cases Forecast for the next 30 days in the US")
+lines(10^(US_pred$pred),col="blue" ,xaxt="n")
+#lines(10^(US_pred$pred+2*US_pred$se),col="green")
+#lines(10^(US_pred$pred-2*US_pred$se),col="green")
+
+par(las=3)
+
+time2<-seq(as.Date("2020/1/22"),length.out=10,by="3 months")  
+axis(1, labels=time2, at=seq(from=2020, by=0.2493, length.out=length(time2)))
+
+```
+
+```{r}
+#Only the Predicted Plot
+plot(10^(US_pred$pred),col="blue", xaxt = "n", xlab="",ylab="Number of Daily New Cases",main="Number of Daily New Cases Forecast for the next 30 days in the US")
+time3<-seq(as.Date("2022/3/21"),length.out=11,by="3 days") 
+axis(1, labels=time3, at=seq(from=2022.06, by=0.0081, length.out=length(time3)), cex.axis=0.6)
+```
+```{r}
+acf(ts(US_AR$residuals),main='ACF Residual')
+pacf(ts(US_AR$residuals),main='PACF Residual')
+```
+
+
+
+
+
+
+
+
+
+india:
+```{r}
+id_cum <- new_cases_by_country %>% 
+  filter(`Country/Region` == "India") %>%
+  select(-1) %>%
+  slice(1) %>%
+  unlist(., use.names=FALSE)
+
+
+id <- diff(c(0, id_cum))[43:789]
+
+for (n in seq(1, length(id), 1)) {
+  if (id[n] == 0) id[n] = mean(id[n-1], id[n+1])
+}
+
+id_data <- ts(id, frequency=365, start=2020)
+# Number of Daily New Cases for 2020/1/22-2022/3/20 plotted as time series
+par(las=3)
+plot(id_data, xlab="", ylab = "Number of Daily New Cases", xaxt="n",col="red")
+axis(2) # plot the y axis
+axis(1, labels=time, at=seq(from=2020, by=0.17, length.out=length(time)))
+box()
+```
+
+```{r}
+acf(ts(id_data),main="ACF Number of Daily New Cases",col="green")
+pacf(ts(id_data),main="PACF Number of Daily New Cases", col="green")
+```
+
+using diff(log10(data))) ---- stationary data
+```{r}
+acf(ts(diff(log10(id_data))),main="ACF Number of Daily New Cases",col="green")
+pacf(ts(diff(log10(id_data))),main="PACF Number of Daily New Cases", col="green")
+```
+
+adf test
+```{r}
+adf.test(diff(log10(id_data)))
+```
+
+
+```{r}
+id_AR <- auto.arima((log10(id_data)), approximation=FALSE,trace=FALSE)
+summary(id_AR)
+par(bg = "white")
+id_pred <- predict(id_AR, n.ahead = 30)
+id_pred
+10^id_pred$pred
+plot(id_data,col="red",xaxt="n" ,xlab = "",ylab = "Number of Daily New Cases",main="Number of Daily New Cases Forecast for the next 30 days")
+lines(10^(id_pred$pred),col="blue" ,xaxt="n")
+#lines(10^(US_pred$pred+2*US_pred$se),col="green")
+#lines(10^(US_pred$pred-2*US_pred$se),col="green")
+
+par(las=3)
+
+time2<-seq(as.Date("2020/1/22"),length.out=10,by="3 months")  
+axis(1, labels=time2, at=seq(from=2020, by=0.2493, length.out=length(time2)))
+
+```
+
+```{r}
+#Only the Predicted Plot
+plot(10^(id_pred$pred),col="blue", xaxt = "n", xlab="",ylab="Number of Daily New Cases",main="Number of Daily New Cases Forecast for the next 30 days")
+time3<-seq(as.Date("2022/3/21"),length.out=11,by="3 days") 
+axis(1, labels=time3, at=seq(from=2022.16, by=0.0081, length.out=length(time3)), cex.axis=0.6)
+```
+
+
+US omi data
+```{r}
+US_omi <- diff(c(0, US_cum))[650:789]
+for (n in seq(1, length(US_omi), 1)) {
+  if (US_omi[n] >910000) US_omi[n] = mean(US_omi[n-1], US_omi[n+1])
+}
+
+time_omi <- seq(as.Date("2021/11/20"),length.out=5,by="1 months") 
+
+US_omi_data <- ts(US_omi, frequency=365, start=2021)
+# Number of Daily New Cases for 2020/1/22-2022/3/20 plotted as time series
+par(las=3)
+plot(US_omi_data, xlab="", ylab = "Number of Daily New Cases in the US", xaxt="n",col="red")
+axis(2) # plot the y axis
+axis(1, labels=time_omi, at=seq(from=2021, by=0.095, length.out=length(time_omi)))
+box()
+```
+
+
+data transforming:
+```{r}
+plot(diff(log10(US_omi_data)),xlab="",ylab="Differenced Log (Number of Daily New Cases)", xaxt="n",col="red")
+axis(2) # plot the y axis
+axis(1, labels=time_omi, at=seq(from=2021, by=0.095, length.out=length(time_omi)))
+```
+
+```{r}
+acf(ts(US_omi_data),main="ACF Number of Daily New Cases",col="green")
+pacf(ts(US_omi_data),main="PACF Number of Daily New Cases", col="green")
+```
+
+
+adf test
+```{r}
+adf.test(diff(log10(US_omi_data)))
+```
+
+using diff(log10(data)) ---- stationary data
+```{r}
+acf(ts(diff(log10(US_omi_data))),main="ACF Number of Daily New Cases",col="green")
+pacf(ts(diff(log10(US_omi_data))),main="PACF Number of Daily New Cases", col="green")
+```
+
+
+```{r}
+US_omi_AR <- auto.arima((log10(US_omi_data)), approximation=FALSE,trace=FALSE)
+summary(US_omi_AR)
+par(bg = "white")
+US_omi_pred <- predict(US_omi_AR, n.ahead = 30)
+US_omi_pred
+US_omi_pred$pred
+plot(US_omi_data ,xlim=c(2021.0,2021.5) ,xaxt="n", col="red" ,xlab = "",ylab = "Number of Daily New Cases",main="Number of Daily New Cases Forecast for the next 30 days in the US")
+lines(10^(US_omi_pred$pred),col="blue", xaxt="n")
+#lines(US_omi_pred$pred+2*US_omi_pred$se,col="green")
+#lines(US_omi_pred$pred-2*US_omi_pred$se,col="green")
+
+par(las=3)
+
+time2_omi<-seq(as.Date("2021/11/20"),length.out=7,by="1 months")  
+axis(1, labels=time2_omi, at=seq(from=2021, by=0.095, length.out=length(time2_omi)))
+
+forecast(US_omi_AR, h = 30)
+```
+
+```{r}
+#Only the Predicted Plot
+plot(10^(US_omi_pred$pred), xaxt = "n", col="blue", xlab="",ylab="Number of Daily New Cases",main="Number of Daily New Cases Forecast for the next 30 days in the US")
+time3<-seq(as.Date("2022/3/21"),length.out=11,by="3 days") 
+axis(1, labels=time3, at=seq(from=2021.383, by=0.0081, length.out=length(time3)), cex.axis=0.6)
+```
+
+
+```{r}
+acf(ts(US_omi_AR$residuals),main='ACF Residual')
+pacf(ts(US_omi_AR$residuals),main='PACF Residual')
+```
+
+
+
+
+
+
+## nz omi data
+```{r}
+NZ_cum <- new_cases_by_country %>% 
+  filter(`Country/Region` == "New Zealand") %>%
+  select(-1) %>%
+  slice(1) %>%
+  unlist(., use.names=FALSE)
+
+
+NZ_omi <- diff(c(0, NZ_cum))[650:789]
+
+for (n in seq(1, length(NZ_omi)-1, 1)) {
+  if (NZ_omi[n] == 0 | NZ_omi[n] > 25000) NZ_omi[n] = mean(NZ_omi[n-1], NZ_omi[n+1])
+  if (NZ_omi[n+1]/NZ_omi[n] > 5) NZ_omi[n] = mean(NZ_omi[n-1], NZ_omi[n+1])
+}
+
+
+time_omi <- seq(as.Date("2021/11/20"),length.out=5,by="1 months") 
+
+NZ_omi_data <- ts(NZ_omi, frequency=365, start=2021)
+# Number of Daily New Cases for 2020/1/22-2022/3/20 plotted as time series
+par(las=3)
+plot(NZ_omi_data, xlab="", ylab = "Number of Daily New Cases in New Zealand", xaxt="n",col="red")
+axis(2) # plot the y axis
+axis(1, labels=time_omi, at=seq(from=2021, by=0.095, length.out=length(time_omi)))
+box()
+```
+data transforming:
+```{r}
+plot(diff(log10(NZ_omi_data)),xlab="",ylab="Differenced Log (Number of Daily New Cases)", xaxt="n",col="red")
+axis(2) # plot the y axis
+axis(1, labels=time_omi, at=seq(from=2021, by=0.095, length.out=length(time_omi)))
+```
+
+```{r}
+acf(ts(NZ_omi_data),main="ACF Number of Daily New Cases",col="green")
+pacf(ts(NZ_omi_data),main="PACF Number of Daily New Cases", col="green")
+```
+
+
+adf test
+```{r}
+adf.test(diff(log10(NZ_omi_data)))
+```
+
+using diff(log10(data)) ---- stationary data
+```{r}
+acf(ts(diff(log10(NZ_omi_data))),main="ACF Number of Daily New Cases",col="green")
+pacf(ts(diff(log10(NZ_omi_data))),main="PACF Number of Daily New Cases", col="green")
+```
+
+
+```{r}
+NZ_omi_AR <- auto.arima((log10(NZ_omi_data)), approximation=FALSE,trace=FALSE)
+summary(NZ_omi_AR)
+par(bg = "white")
+NZ_omi_pred <- predict(NZ_omi_AR, n.ahead = 30)
+NZ_omi_pred
+NZ_omi_pred$pred
+plot(NZ_omi_data,xlim=c(2021.0,2021.5), col="red",xaxt="n" ,xlab = "",ylab = "Number of Daily New Cases",main="Number of Daily New Cases Forecast for the next 30 days in New Zealand")
+lines(10^(NZ_omi_pred$pred),col="blue" ,xaxt="n")
+#lines(US_omi_pred$pred+2*US_omi_pred$se,col="green")
+#lines(US_omi_pred$pred-2*US_omi_pred$se,col="green")
+
+par(las=3)
+
+time2_omi<-seq(as.Date("2021/11/20"),length.out=7,by="1 months")  
+axis(1, labels=time2_omi, at=seq(from=2021, by=0.095, length.out=length(time2_omi)))
+
+forecast(NZ_omi_data, h = 30)
+```
+
+```{r}
+#Only the Predicted Plot
+plot(10^(NZ_omi_pred$pred),col="blue", xaxt = "n", xlab="",ylab="Number of Daily New Cases",main="Number of Daily New Cases Forecast for the next 30 days in New Zealand")
+time3<-seq(as.Date("2022/3/21"),length.out=11,by="3 days") 
+axis(1, labels=time3, at=seq(from=2021.383, by=0.0081, length.out=length(time3)), cex.axis=0.6)
+```
+
+
+```{r}
+acf(ts(NZ_omi_AR$residuals),main='ACF Residual')
+pacf(ts(NZ_omi_AR$residuals),main='PACF Residual')
+```
+
+
+## india OMI DATA:
+```{r}
+id_cum <- new_cases_by_country %>% 
+  filter(`Country/Region` == "India") %>%
+  select(-1) %>%
+  slice(1) %>%
+  unlist(., use.names=FALSE)
+
+
+id_omi <- diff(c(0, id_cum))[650:789]
+
+for (n in seq(1, length(id_omi), 1)) {
+  if (id_omi[n] == 0) id_omi[n] = mean(id_omi[n-1], id_omi[n+1])
+}
+
+id_omi_data <- ts(id_omi, frequency=365, start=2021)
+# Number of Daily New Cases for 2020/1/22-2022/3/20 plotted as time series
+par(las=3)
+plot(id_omi_data, xlab="", ylab = "Number of Daily New Cases", xaxt="n",col="red")
+axis(2) # plot the y axis
+axis(1, labels=time_omi, at=seq(from=2021, by=0.095, length.out=length(time_omi)))
+box()
+```
+data transforming:
+```{r}
+plot(diff(log10(id_omi_data)),xlab="",ylab="Differenced Log (Number of Daily New Cases)", xaxt="n",col="red")
+axis(2) # plot the y axis
+axis(1, labels=time_omi, at=seq(from=2021, by=0.095, length.out=length(time_omi)))
+```
+
+
+
+```{r}
+acf(ts(id_omi_data),main="ACF Number of Daily New Cases",col="green")
+pacf(ts(id_omi_data),main="PACF Number of Daily New Cases", col="green")
+```
+
+using diff(log10(data))) ---- stationary data
+```{r}
+acf(ts(diff(log10(id_omi_data))),main="ACF Number of Daily New Cases",col="green")
+pacf(ts(diff(log10(id_omi_data))),main="PACF Number of Daily New Cases", col="green")
+```
+
+adf test
+```{r}
+adf.test(diff(log10(id_omi_data)))
+```
+
+
+```{r}
+id_omi_AR <- auto.arima((log10(id_omi_data)), approximation=FALSE,trace=FALSE)
+summary(id_omi_AR)
+par(bg = "white")
+id_omi_pred <- predict(id_omi_AR, n.ahead = 30)
+id_omi_pred
+10^id_omi_pred$pred
+plot(id_omi_data,xlim=c(2021.0,2021.5), col="red",xaxt="n" ,xlab = "",ylab = "Number of Daily New Cases",main="Number of Daily New Cases Forecast for the next 30 days in India")
+lines(10^(id_omi_pred$pred),col="blue" ,xaxt="n")
+#lines(10^(US_pred$pred+2*US_pred$se),col="green")
+#lines(10^(US_pred$pred-2*US_pred$se),col="green")
+
+par(las=3)
+  
+axis(1, labels=time2_omi, at=seq(from=2021, by=0.095, length.out=length(time2_omi)))
+
+```
+
+```{r}
+#Only the Predicted Plot
+plot(10^(id_omi_pred$pred),col="blue", xaxt = "n", xlab="",ylab="Number of Daily New Cases",main="Number of Daily New Cases Forecast for the next 30 days in India")
+axis(1, labels=time3, at=seq(from=2021.383, by=0.0081, length.out=length(time3)), cex.axis=0.6)
+```
+
+
+## Brazil OMI DATA:
+```{r}
+br_cum <- new_cases_by_country %>% 
+  filter(`Country/Region` == "Brazil") %>%
+  select(-1) %>%
+  slice(1) %>%
+  unlist(., use.names=FALSE)
+
+
+br_omi <- diff(c(0, br_cum))[650:789]
+
+for (n in seq(1, length(br_omi)-1, 1)) {
+  if (br_omi[n] == 0|br_omi[n]>300000) br_omi[n] = mean(br_omi[n-1], br_omi[n+1])
+  if (br_omi[n+1]/br_omi[n] > 5) br_omi[n] = mean(br_omi[n-1], br_omi[n+1])
+}
+
+br_omi_data <- ts(br_omi, frequency=365, start=2021)
+# Number of Daily New Cases for 2020/1/22-2022/3/20 plotted as time series
+par(las=3)
+plot(br_omi_data, xlab="", ylab = "Number of Daily New Cases", xaxt="n",col="red")
+axis(2) # plot the y axis
+axis(1, labels=time_omi, at=seq(from=2021, by=0.095, length.out=length(time_omi)))
+box()
+```
+data transforming:
+```{r}
+plot(diff(log10(br_omi_data)),xlab="",ylab="Differenced Log (Number of Daily New Cases)", xaxt="n",col="red")
+axis(2) # plot the y axis
+axis(1, labels=time_omi, at=seq(from=2021, by=0.095, length.out=length(time_omi)))
+```
+
+
+
+```{r}
+acf(ts(br_omi_data),main="ACF Number of Daily New Cases",col="green")
+pacf(ts(br_omi_data),main="PACF Number of Daily New Cases", col="green")
+```
+
+using diff(log10(data))) ---- stationary data
+```{r}
+acf(ts(diff(log10(br_omi_data))),main="ACF Number of Daily New Cases",col="green")
+pacf(ts(diff(log10(br_omi_data))),main="PACF Number of Daily New Cases", col="green")
+```
+
+adf test
+```{r}
+adf.test(diff(log10(br_omi_data)))
+```
+
+
+```{r}
+br_omi_AR <- auto.arima(log10(br_omi_data))
+summary(br_omi_AR)
+par(bg = "white")
+br_omi_pred <- predict(br_omi_AR, n.ahead = 30)
+br_omi_pred
+10^br_omi_pred$pred
+plot(br_omi_data,xlim=c(2021.0,2021.5), col="red",xaxt="n" ,xlab = "",ylab = "Number of Daily New Cases",main="Number of Daily New Cases Forecast for the next 30 days in France")
+lines(10^(br_omi_pred$pred),col="blue" ,xaxt="n")
+#lines(10^(US_pred$pred+2*US_pred$se),col="green")
+#lines(10^(US_pred$pred-2*US_pred$se),col="green")
+
+par(las=3)
+  
+axis(1, labels=time2_omi, at=seq(from=2021, by=0.095, length.out=length(time2_omi)))
+
+```
+
+```{r}
+#Only the Predicted Plot
+plot(10^(br_omi_pred$pred),col="blue", xaxt = "n", xlab="",ylab="Number of Daily New Cases",main="Number of Daily New Cases Forecast for the next 30 days in France")
+axis(1, labels=time3, at=seq(from=2021.383, by=0.0081, length.out=length(time3)), cex.axis=0.6)
+```
+## United Kingdom OMI DATA:
+```{r}
+uk_cum <- new_cases_by_country %>% 
+  filter(`Country/Region` == "United Kingdom") %>%
+  select(-1) %>%
+  slice(1) %>%
+  unlist(., use.names=FALSE)
+
+
+uk_omi <- diff(c(0, uk_cum))[650:789]
+uk_omi[139] = 74711
+uk_omi[140] = 66733
+uk_omi[102] = mean(67980,58860)
+
+for (n in seq(1, length(uk_omi)-1, 1)) {
+  if (uk_omi[n] == 0|uk_omi[n]>300000) uk_omi[n] = mean(uk_omi[n-1], uk_omi[n+1])
+}
+
+uk_omi_data <- ts(uk_omi, frequency=365, start=2021)
+# Number of Daily New Cases for 2020/1/22-2022/3/20 plotted as time series
+par(las=3)
+plot(uk_omi_data, xlab="", ylab = "Number of Daily New Cases", xaxt="n",col="red")
+axis(2) # plot the y axis
+axis(1, labels=time_omi, at=seq(from=2021, by=0.095, length.out=length(time_omi)))
+box()
+```
+
+```{r}
+
+uk_omi_AR <- auto.arima(log10(uk_omi_data))
+summary(uk_omi_AR)
+par(bg = "white")
+uk_omi_pred <- predict(uk_omi_AR, n.ahead = 30)
+uk_omi_pred
+10^uk_omi_pred$pred
+plot(uk_omi_data,xlim=c(2021.0,2021.5), col="red",xaxt="n" ,xlab = "",ylab = "Number of Daily New Cases",main="Number of Daily New Cases Forecast for the next 30 days in UK")
+lines(10^(uk_omi_pred$pred),col="blue" ,xaxt="n")
+#lines(10^(US_pred$pred+2*US_pred$se),col="green")
+#lines(10^(US_pred$pred-2*US_pred$se),col="green")
+
+par(las=3)
+  
+axis(1, labels=time2_omi, at=seq(from=2021, by=0.095, length.out=length(time2_omi)))
+#Only the Predicted Plot
+plot(10^(uk_omi_pred$pred),col="blue", xaxt = "n", xlab="",ylab="Number of Daily New Cases",main="Number of Daily New Cases Forecast for the next 30 days in UK")
+axis(1, labels=time3, at=seq(from=2021.383, by=0.0081, length.out=length(time3)), cex.axis=0.6)
+```
+
+
